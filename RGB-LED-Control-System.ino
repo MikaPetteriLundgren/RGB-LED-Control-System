@@ -31,12 +31,13 @@ PubSubClient mqttClient(MQTT_SERVER, 1883, mqttCallback, wifiClient); // MQTT_SE
 char clientID[50];
 char topic[50];
 char msg[80];
+unsigned int MQTTBufferSize = 512; // Size on internal MQTT buffer for incoming/outgoing messages in bytes. Default value is 256B which is not big enough for this use case
 char subscribeTopic[ ] = MQTT_SUBSCRIBE_TOPIC; // Arduino will listen this topic for incoming MQTT messages from the Domoticz. The MQTT_SUBSCRIBE_TOPIC is defined in the header file
 int mqttConnectionFails = 0; // If MQTT connection is disconnected for some reason, this variable is increment by 1
 
 //MQTT variables
 int receivedIDX = 0; // Received IDX number will be stored to this variable
-int switchIDX = 1469; // IDX of the RGB switch controlling the RGB LEDs in Domoticz
+int switchIDX = 1434; // IDX of the RGB switch controlling the RGB LEDs in Domoticz
 
 //WS2813 RGB LED stripe and NeoPixel library initialization
 const uint16_t PixelCount = 76; // 76 RGB LEDs on the stripe
@@ -66,31 +67,28 @@ void setup()
   startWiFi();
   WiFi.macAddress(mac);
 
-  //Create MQTT client String
+  //Print MAC address
   Serial.print(F("MAC address: "));
-  for (int i = (sizeof(mac)-1); i>=0; i--)
-  {
-    Serial.print(mac[i],HEX);
-    Serial.print(":");
-  }
-  Serial.println();
+  Serial.println(WiFi.macAddress());
 
   // MQTT client ID is constructed from the MAC address in order to be unique. The unique MQTT client ID is needed in order to avoid issues with Mosquitto broker
   String clientIDStr = "Lolin_D1_Mini_";
-
-  for (int i = (sizeof(mac)-1); i>=0; i--)
-  {
-    clientIDStr.concat(mac[i]);
-  }
+  clientIDStr.concat(WiFi.macAddress());
 
   Serial.print(F("MQTT client ID: "));
   Serial.println(clientIDStr);
   clientIDStr.toCharArray(clientID, clientIDStr.length()+1);
 
-  //MQTT connection is established and topic subscribed for the callback function
+  //MQTT connection is established and topic subscribed for the callback function. Also size of an internal MQTT buffer is increased.
   mqttClient.connect(clientID) ? Serial.println(F("MQTT client connected")) : Serial.println(F("MQTT client connection failed...")); //condition ? valueIfTrue : valueIfFalse
-  mqttClient.subscribe(subscribeTopic) ? Serial.println(F("MQTT topic subscribed succesfully")) : Serial.println(F("MQTT topic subscription failed...")); //condition ? valueIfTrue : valueIfFalse
+  Serial.print(F("MQTT topic "));
+  Serial.print(subscribeTopic);
+  mqttClient.subscribe(subscribeTopic) ? Serial.println(F(" subscribed succesfully")) : Serial.println(F(" subscription failed...")); //condition ? valueIfTrue : valueIfFalse
 
+  Serial.print(F("Size of an internal MQTT buffer set to "));
+  Serial.print(MQTTBufferSize);
+  mqttClient.setBufferSize(MQTTBufferSize) ? Serial.println(F("B succesfully")) : Serial.println(F("B failed. Default 256B to be used...")); //condition ? valueIfTrue : valueIfFalse
+  
   //Reset all neopixels to off state
   strip.Begin();
   strip.Show();
@@ -113,13 +111,12 @@ void loop()
 
       mqttConnectionFails +=1; // If MQTT connection is disconnected for some reason this variable is increment by 1
 
-      // Wifi connection to be disconnected and initialized again if MQTT connection has been disconnected 10 times
-      if (mqttConnectionFails >= 10)
+      // Device to be reset if MQTT connection has been disconnected 5 times
+      if (mqttConnectionFails >= 5)
       {
-        Serial.println(F("Wifi connection to be disconnected and initialized again!"));
+        Serial.println(F("Device to be reset because MQTT connection has been disconnected 5 times"));
         WiFi.disconnect();
-        mqttConnectionFails = 0;
-        startWiFi();
+        ESP.restart();
       }
     }
 
@@ -148,8 +145,13 @@ void startWiFi() //ESP8266 Wifi
   }
   Serial.println();
 
-  Serial.print("Connected, IP address: ");
+  Serial.print(F("Connected to WiFi network: "));
+  Serial.println(ssid);
+  Serial.print(F("IP address: "));
   Serial.println(WiFi.localIP());
+  Serial.print(F("RSSI: "));
+  Serial.print(WiFi.RSSI());
+  Serial.println(F("dBm"));
 }
 
 // mqttCallback function handles messages received from subscribed MQTT topic(s)
@@ -197,7 +199,7 @@ bool jsonParser(byte* dataPayload, unsigned int dataLength) // Parse received JS
   // Fetch IDX from the JSON document
   receivedIDX = doc["idx"];
 
-  // Print fetched IDX value if Debug mode is enabled
+  // Print fetched IDX value
     Serial.print(F("Parsed IDX:"));
     Serial.println(receivedIDX);
 
