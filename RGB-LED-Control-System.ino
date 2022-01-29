@@ -3,7 +3,7 @@
    The sketch receives JSON messages from Domoticz home automation system and parses IDX value out of each and every message.
    If the parsed IDX value matches with the predefined IDX value, rest of the needed values are parsed out.
 
-   Colour and brightness of RGD LED stripe is set based on the values received from the Domoticz. The sketch doesn't send any data to the Domoticz via MQTT.
+   Colour and brightness of RGD LED stripe is set based on the values received from the Domoticz. The sketch sends log message to Domoticz after changing RGB LED stripe's settings.
 
    The sketch needs RGB-LED-Control-System.h header file in order to work. The header file includes settings for the sketch.
    */
@@ -27,11 +27,11 @@ byte mac[6]; // MAC address of Wifi module
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 
 //MQTT initialization
-PubSubClient mqttClient(MQTT_SERVER, 1883, mqttCallback, wifiClient); // MQTT_SERVER constructor parameter is defined in the header file
+PubSubClient mqttClient(MQTT_SERVER, 1883, mqttCallback, wifiClient); // MQTT_SERVER constructor parameter is defined in the header
 char clientID[50];
-char topic[50];
 char msg[80];
 unsigned int MQTTBufferSize = 512; // Size on internal MQTT buffer for incoming/outgoing messages in bytes. Default value is 256B which is not big enough for this use case
+char topic[] = MQTT_TOPIC; // Topic for outgoing MQTT messages to the Domoticz. The MQTT_TOPIC is defined in the header file
 char subscribeTopic[ ] = MQTT_SUBSCRIBE_TOPIC; // Arduino will listen this topic for incoming MQTT messages from the Domoticz. The MQTT_SUBSCRIBE_TOPIC is defined in the header file
 int mqttConnectionFails = 0; // If MQTT connection is disconnected for some reason, this variable is increment by 1
 
@@ -43,13 +43,14 @@ int switchIDX = 1434; // IDX of the RGB switch controlling the RGB LEDs in Domot
 const uint16_t PixelCount = 76; // 76 RGB LEDs on the stripe
 const uint8_t PixelPin = 2;  // make sure to set this to the correct pin, ignored for Esp8266
 //NeoPixelBrightnessBus<NeoRgbFeature, NeoWs2813Method> strip(PixelCount, PixelPin); // Use with Arduino
-NeoPixelBrightnessBus<NeoRgbFeature, NeoEsp8266Uart1800KbpsMethod> strip(PixelCount, PixelPin); // Use with Lolin D1 Mini
+NeoPixelBrightnessBus<NeoRgbFeature, NeoEsp8266Uart1Ws2813Method> strip(PixelCount, PixelPin); // Use with Lolin D1 Mini
 #define colorSaturation 255
 unsigned int RGB_R = 0; // variable to store value of red component (0-255)
 unsigned int RGB_G = 0; // variable to store value of green component (0-255)
 unsigned int RGB_B = 0; // variable to store value of blue component (0-255)
 unsigned int brightness = 100; // variable to store value of brightness (0-100)
 unsigned int RGBLED_state = 0; // variable to store information whether RGD LEDs are turned on (>0) or off (0)
+String deviceName = "";
 RgbColor receivedColor(RGB_G, RGB_R, RGB_B);
 RgbColor white(colorSaturation);
 RgbColor black(0);
@@ -62,6 +63,8 @@ void setup()
 {
   Serial.begin(115200); // Start serial port
   //while (!Serial) ; // Needed with Arduino Leonardo only
+
+  Serial.println(F("\n---------------- Setup started ----------------\n"));
 
   // Start Wifi
   startWiFi();
@@ -79,21 +82,21 @@ void setup()
   Serial.println(clientIDStr);
   clientIDStr.toCharArray(clientID, clientIDStr.length()+1);
 
-  //MQTT connection is established and topic subscribed for the callback function. Also size of an internal MQTT buffer is increased.
+  //Size of an internal MQTT buffer is increased and MQTT connection is established and topic subscribed for the callback function.
+  Serial.print(F("Size of an internal MQTT buffer set to "));
+  Serial.print(MQTTBufferSize);
+  mqttClient.setBufferSize(MQTTBufferSize) ? Serial.println(F("B succesfully")) : Serial.println(F("B failed. Default 256B to be used...")); //condition ? valueIfTrue : valueIfFalse
+
   mqttClient.connect(clientID) ? Serial.println(F("MQTT client connected")) : Serial.println(F("MQTT client connection failed...")); //condition ? valueIfTrue : valueIfFalse
   Serial.print(F("MQTT topic "));
   Serial.print(subscribeTopic);
   mqttClient.subscribe(subscribeTopic) ? Serial.println(F(" subscribed succesfully")) : Serial.println(F(" subscription failed...")); //condition ? valueIfTrue : valueIfFalse
-
-  Serial.print(F("Size of an internal MQTT buffer set to "));
-  Serial.print(MQTTBufferSize);
-  mqttClient.setBufferSize(MQTTBufferSize) ? Serial.println(F("B succesfully")) : Serial.println(F("B failed. Default 256B to be used...")); //condition ? valueIfTrue : valueIfFalse
   
   //Reset all neopixels to off state
   strip.Begin();
   strip.Show();
 
-  Serial.println(F("Setup completed succesfully!\n"));
+  Serial.println(F("\n---------------- Setup completed succesfully ----------------\n"));
 }
 
 
@@ -116,6 +119,16 @@ void loop()
       {
         Serial.println(F("Device to be reset because MQTT connection has been disconnected 5 times"));
         WiFi.disconnect();
+
+        Serial.println(F("Turning RGB LEDs off..."));
+        for (int i = 0; i < PixelCount; i++)
+        {
+          strip.SetPixelColor(i, black); // Turn pixels off
+        }
+
+        strip.Show(); // Apply changes
+
+        delay(5000);
         ESP.restart();
       }
     }
@@ -154,6 +167,7 @@ void startWiFi() //ESP8266 Wifi
   Serial.println(F("dBm"));
 }
 
+
 // mqttCallback function handles messages received from subscribed MQTT topic(s)
 void mqttCallback(char* topic, byte* payload, unsigned int length)
 {
@@ -181,6 +195,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
     Serial.println(F("JSON parsing failed\n"));
   }
 }
+
 
 bool jsonParser(byte* dataPayload, unsigned int dataLength) // Parse received JSON document. Return true if parsing succeeds and false if it fails
 {
@@ -211,6 +226,7 @@ bool jsonParser(byte* dataPayload, unsigned int dataLength) // Parse received JS
     RGB_B = doc["Color"]["b"];
     brightness = doc["Level"];
     RGBLED_state = doc["nvalue"];
+    const char* parsedName = doc["name"];
     Serial.println(F("Parsed RGB LED values:"));
     Serial.print(F("RGB_R: "));
     Serial.println(RGB_R);
@@ -224,10 +240,65 @@ bool jsonParser(byte* dataPayload, unsigned int dataLength) // Parse received JS
     (RGBLED_state == 0) ? Serial.println(F("Off")) : Serial.println(F("On")); //condition ? valueIfTrue : valueIfFalse
 
     RGBLEDControl(RGB_R, RGB_G, RGB_B, brightness, RGBLED_state);
+
+    deviceName = String(parsedName); // parsedName is converted to String
+    sendMQTTPayload(createMQTTPayload(deviceName, switchIDX)); // Send a message to Domoticz's log
    }
 
   return true;
 }
+
+
+String createMQTTPayload(String name, int idx) //Create MQTT message payload. Returns created payload as a String.
+{
+  StaticJsonDocument<100> doc; // Capacity has been calculated in arduinojson.org/v6/assistant
+
+  // Create a message to be sent to Domoticz log
+  String payloadStr = name;
+  payloadStr.concat(" (IDX ");
+  payloadStr.concat(idx);
+  payloadStr.concat(") set to ");
+  payloadStr.concat(RGBLED_state == 0 ? "Off" : "On");
+
+  // Add values in the JSON document
+  doc["command"] = "addlogmessage";
+  doc["message"] = payloadStr;
+
+  // Generate the prettified JSON and store it to the string
+  String dataMsg = "";
+  serializeJsonPretty(doc, dataMsg);
+
+	return dataMsg;
+}
+
+
+void sendMQTTPayload(String payload) // Sends MQTT payload to the MQTT broker / Domoticz
+{
+
+	// Convert payload to char array
+	payload.toCharArray(msg, payload.length()+1);
+
+    //If connection to MQTT broker is disconnected, connect again
+  if (!mqttClient.connected())
+  {
+    (mqttClient.connect(clientID)) ? Serial.println(F("MQTT client connected")) : Serial.println(F("MQTT client connection failed...")); //condition ? valueIfTrue : valueIfFalse - This is a Ternary operator
+  }
+
+	//Publish payload to MQTT broker
+	if (mqttClient.publish(topic, msg))
+	{
+		Serial.println(F("Following data published to MQTT broker: "));
+		Serial.print(F("Topic: "));
+    Serial.println(topic);
+		Serial.println(payload);
+		Serial.println();
+	}
+	else
+  {
+		Serial.println(F("Publishing to MQTT broker failed"));
+  }
+}
+
 
 void RGBLEDControl(unsigned int red, unsigned int green, unsigned int blue, unsigned int stripeBrightness, unsigned int stripeStatus) // Controls RGB LED stripe based on the received colour and brightness data
 {
@@ -236,7 +307,7 @@ void RGBLEDControl(unsigned int red, unsigned int green, unsigned int blue, unsi
     Serial.println(F("Turning RGB LEDs off..."));
     for (int i = 0; i < PixelCount; i++)
     {
-    strip.SetPixelColor(i, black); // Turn pixels off
+      strip.SetPixelColor(i, black); // Turn pixels off
     }
 
     strip.Show(); // Apply changes
@@ -258,6 +329,7 @@ void RGBLEDControl(unsigned int red, unsigned int green, unsigned int blue, unsi
   
   
 }
+
 
 void printClientState(int clientState) // Prints MQTT client state in human readable format. The states can be found from here: https://pubsubclient.knolleary.net/api.html#state
 {
