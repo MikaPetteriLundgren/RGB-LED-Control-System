@@ -33,7 +33,7 @@ char msg[80];
 unsigned int MQTTBufferSize = 512; // Size on internal MQTT buffer for incoming/outgoing messages in bytes. Default value is 256B which is not big enough for this use case
 char topic[] = MQTT_TOPIC; // Topic for outgoing MQTT messages to the Domoticz. The MQTT_TOPIC is defined in the header file
 char subscribeTopic[ ] = MQTT_SUBSCRIBE_TOPIC; // Arduino will listen this topic for incoming MQTT messages from the Domoticz. The MQTT_SUBSCRIBE_TOPIC is defined in the header file
-int mqttConnectionFails = 0; // If MQTT connection is disconnected for some reason, this variable is increment by 1
+boolean mqttConnectionFail = false; // If MQTT connection is disconnected for some reason, this variable is set to true
 
 //MQTT variables
 int receivedIDX = 0; // Received IDX number will be stored to this variable
@@ -105,19 +105,34 @@ void loop()
     //If connection to MQTT broker is disconnected. Connect and subscribe again
     if (!mqttClient.connected())
     {
+      Serial.println(F("MQTT client disconnected"));
       printClientState(mqttClient.state()); // print the state of the client
-      
-      (mqttClient.connect(clientID)) ? Serial.println(F("MQTT client connected")) : Serial.println(F("MQTT client connection failed...")); //condition ? valueIfTrue : valueIfFalse
 
-      //MQTT topic subscribed for the callback function
-      (mqttClient.subscribe(subscribeTopic)) ? Serial.println(F("MQTT topic subscribed succesfully")) : Serial.println(F("MQTT topic subscription failed...")); //condition ? valueIfTrue : valueIfFalse
-
-      mqttConnectionFails +=1; // If MQTT connection is disconnected for some reason this variable is increment by 1
-
-      // Device to be reset if MQTT connection has been disconnected 5 times
-      if (mqttConnectionFails >= 5)
+      if (mqttClient.connect(clientID))
       {
-        Serial.println(F("Device to be reset because MQTT connection has been disconnected 5 times"));
+        Serial.println(F("MQTT client connected"));
+
+        if (mqttClient.subscribe(subscribeTopic)) //MQTT topic subscribed for the callback function
+        {
+          Serial.println(F("MQTT topic subscribed succesfully"));
+        }
+        else
+        {
+          Serial.println(F("MQTT topic subscription failed"));
+          mqttConnectionFail = true; // Set MQTT connection fail to true in order to restart the ESP8266
+        }
+        
+      }
+      else
+      {
+        Serial.println(F("MQTT client connection failed"));
+        mqttConnectionFail = true; // Set MQTT connection fail to true in order to restart the ESP8266
+      }
+
+      // If MQTT connection is disconnected for some reason the ESP8266 to be rebooted
+      if (mqttConnectionFail = true)
+      {
+        Serial.println(F("Device to be reset because of MQTT connection issues"));
         WiFi.disconnect();
 
         Serial.println(F("Turning RGB LEDs off..."));
