@@ -22,6 +22,7 @@ int status = WL_IDLE_STATUS; // Wifi status
 IPAddress ip; // IP address
 WiFiClient wifiClient; // Initialize Wifi Client
 byte mac[6]; // MAC address of Wifi module
+byte WiFiTimeout = 30; // Wi-Fi connection timeout in seconds. System to be rebooted if the timeout expires.
 
 // MQTT callback function header
 void mqttCallback(char* topic, byte* payload, unsigned int length);
@@ -33,7 +34,7 @@ char msg[80];
 unsigned int MQTTBufferSize = 512; // Size on internal MQTT buffer for incoming/outgoing messages in bytes. Default value is 256B which is not big enough for this use case
 char topic[] = MQTT_TOPIC; // Topic for outgoing MQTT messages to the Domoticz. The MQTT_TOPIC is defined in the header file
 char subscribeTopic[ ] = MQTT_SUBSCRIBE_TOPIC; // Arduino will listen this topic for incoming MQTT messages from the Domoticz. The MQTT_SUBSCRIBE_TOPIC is defined in the header file
-boolean mqttConnectionFail = false; // If MQTT connection is disconnected for some reason, this variable is set to true
+byte MQTTtimeout = 30; // MQTT connection timeout in seconds. System to be rebooted if the timeout expires.
 
 //MQTT variables
 int receivedIDX = 0; // Received IDX number will be stored to this variable
@@ -57,6 +58,7 @@ RgbColor black(0);
 
 //#define DEBUG // Comment this line out if there is no need to print debug information via serial port
 //#define RAM_DEBUG // Comment this line out if there is no need to print RAM debug information via serial port
+//#define WIFI_DEBUG // Comment this line out if there is no need to print WIFI debug information via serial port
 
 
 void setup()
@@ -66,13 +68,13 @@ void setup()
 
   Serial.println(F("\n---------------- Setup started ----------------\n"));
 
+  //Print MAC address
+  Serial.print(F("Wi-Fi MAC address: "));
+  Serial.println(WiFi.macAddress());
+
   // Start Wifi
   startWiFi();
   WiFi.macAddress(mac);
-
-  //Print MAC address
-  Serial.print(F("MAC address: "));
-  Serial.println(WiFi.macAddress());
 
   // MQTT client ID is constructed from the MAC address in order to be unique. The unique MQTT client ID is needed in order to avoid issues with Mosquitto broker
   String clientIDStr = "Lolin_D1_Mini_";
@@ -106,51 +108,40 @@ void loop()
     if (!mqttClient.connected())
     {
       Serial.println(F("MQTT client disconnected"));
-      printClientState(mqttClient.state()); // print the state of the client
+      printMQTTClientState(mqttClient.state()); // print the state of the client
+      Serial.println(F("Trying to reconnect"));
+      byte timeoutCounter = 0;
 
-      if (mqttClient.connect(clientID))
+      while (!mqttClient.connect(clientID))
       {
-        Serial.println(F("MQTT client connected"));
+        delay(500);
+        Serial.print(".");
+        timeoutCounter += 1;
 
-        if (mqttClient.subscribe(subscribeTopic)) //MQTT topic subscribed for the callback function
+        if (timeoutCounter >= (MQTTtimeout * 2));
         {
-          Serial.println(F("MQTT topic subscribed succesfully"));
+          Serial.println("MQTT connection timeout. Wi-Fi to be reconnected.");
+          WiFi.disconnect(); // Disconnect from the Wi-Fi network
+          delay(5000);
+          startWiFi(); // Connect to the Wi-Fi network
+          timeoutCounter = 0;
         }
-        else
-        {
-          Serial.println(F("MQTT topic subscription failed"));
-          mqttConnectionFail = true; // Set MQTT connection fail to true in order to restart the ESP8266
-        }
-        
+      }
+    
+      Serial.println(F("MQTT client connected"));
+
+      if (mqttClient.subscribe(subscribeTopic)) //MQTT topic subscribed for the callback function
+      {
+        Serial.println(F("MQTT topic subscribed succesfully"));
       }
       else
       {
-        Serial.println(F("MQTT client connection failed"));
-        mqttConnectionFail = true; // Set MQTT connection fail to true in order to restart the ESP8266
-      }
-
-      // If MQTT connection is disconnected for some reason the ESP8266 to be rebooted
-      if (mqttConnectionFail = true)
-      {
-        Serial.println(F("Device to be reset because of MQTT connection issues"));
-        WiFi.disconnect();
-
-        Serial.println(F("Turning RGB LEDs off..."));
-        for (int i = 0; i < PixelCount; i++)
-        {
-          strip.SetPixelColor(i, black); // Turn pixels off
-        }
-
-        strip.Show(); // Apply changes
-
-        delay(5000);
-        ESP.restart();
+        Serial.println(F("MQTT topic subscription failed"));
+        mqttClient.disconnect(); // Disconnect the MQTT client
       }
     }
 
     mqttClient.loop(); //This should be called regularly to allow the MQTT client to process incoming messages and maintain its connection to the server.
-
-    delay(1000);
 
    #if defined RAM_DEBUG
      Serial.print(F("Amount of free RAM memory: "));
@@ -161,18 +152,33 @@ void loop()
 
 void startWiFi() //ESP8266 Wifi
 {
+  Serial.printf("Wi-Fi set to station mode (WIFI_STA) %s\n", WiFi.mode(WIFI_STA) ? "" : "failed!"); // Set ESP8266 to a client mode
   WiFi.begin(ssid, pass);
+  byte timeoutCounter = 0;
 
+  Serial.print("Wi-Fi connection timeout set to ");
+  Serial.print(WiFiTimeout);
+  Serial.println("s");
   Serial.print("Connecting to Wi-Fi network ");
-  Serial.println(ssid);
+  Serial.print(ssid);
 
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
     Serial.print(".");
-  }
-  Serial.println();
 
+    if (timeoutCounter >= WiFiTimeout * 2)
+    {
+      printWifiState(WiFi.status());
+      Serial.println("\nWi-fi connection timeout");
+      Serial.println("System to be restarted in 2s...");
+      delay(2000);
+      ESP.restart();
+    }
+    timeoutCounter += 1;
+  }
+
+  Serial.println();
   Serial.print(F("Connected to WiFi network: "));
   Serial.println(ssid);
   Serial.print(F("IP address: "));
@@ -180,6 +186,9 @@ void startWiFi() //ESP8266 Wifi
   Serial.print(F("RSSI: "));
   Serial.print(WiFi.RSSI());
   Serial.println(F("dBm"));
+
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
 }
 
 
@@ -346,13 +355,13 @@ void RGBLEDControl(unsigned int red, unsigned int green, unsigned int blue, unsi
 }
 
 
-void printClientState(int clientState) // Prints MQTT client state in human readable format. The states can be found from here: https://pubsubclient.knolleary.net/api.html#state
+void printMQTTClientState(int MQTTClientState) // Prints MQTT client state in human readable format. The states can be found from here: https://pubsubclient.knolleary.net/api.html#state
 {
 
   Serial.print(F("State of the MQTT client: "));
-  Serial.print(clientState);
+  Serial.print(MQTTClientState);
   
-  switch (clientState)
+  switch (MQTTClientState)
   {
    case -4:
      Serial.println(F(" - the server didn't respond within the keepalive time")); 
@@ -388,4 +397,45 @@ void printClientState(int clientState) // Prints MQTT client state in human read
      Serial.println(F(" - unknown state")); 
      break;
   }  
+}
+
+
+void printWifiState(int WifiStatus) // Prints Wi-Fi client status in human readable format. The statuses can be found via the following link: https://arduino-esp8266.readthedocs.io/en/latest/esp8266wifi/readme.html
+{
+
+  Serial.print(F("\nWi-Fi status: "));
+  Serial.print(WifiStatus);
+  
+  switch (WifiStatus)
+  {
+   case 0:
+     Serial.println(F(" - Wi-Fi client is in process of changing states")); 
+     break;
+   case 1:
+     Serial.println(F(" - Wi-Fi network not found")); 
+     break;
+   case 3:
+     Serial.println(F(" - Connected")); 
+     break;
+   case 4:
+     Serial.println(F(" - Connection failed")); 
+     break;
+   case 6:
+     Serial.println(F(" - Password is incorrect")); 
+     break;
+   case 7:
+     Serial.println(F(" - Module is not configured in station mode")); 
+     break;   
+   default:
+     Serial.println(F(" - Unknown Wi-Fi status code received")); 
+     break;
+  }  
+
+  // Wi-Fi debug info is printed out if WIFI_DEBUG is uncommented
+  #if defined WIFI_DEBUG
+    Serial.println(F("Wi-Fi diagnostics info:"));
+    Serial.setDebugOutput(true);
+    WiFi.printDiag(Serial);
+  #endif
+
 }
