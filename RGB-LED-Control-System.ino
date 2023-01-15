@@ -178,6 +178,14 @@ void startWiFi() //ESP8266 Wifi
     timeoutCounter += 1;
   }
 
+  // Wi-Fi debug info is printed out if WIFI_DEBUG is uncommented
+  #if defined WIFI_DEBUG
+    Serial.println(F("\nWi-Fi diagnostics info:"));
+    Serial.setDebugOutput(true); //enable debug via serial port
+    WiFi.printDiag(Serial);
+    Serial.setDebugOutput(false); //disable debug via serial port
+  #endif
+
   Serial.println();
   Serial.print(F("Connected to WiFi network: "));
   Serial.println(ssid);
@@ -433,8 +441,8 @@ void printWifiState(int WifiStatus) // Prints Wi-Fi client status in human reada
 
   // Wi-Fi debug info is printed out if WIFI_DEBUG is uncommented
   #if defined WIFI_DEBUG
-    Serial.println(F("Wi-Fi diagnostics info:"));
-    Serial.setDebugOutput(true);
+    Serial.println(F("\nWi-Fi diagnostics info:"));
+    Serial.setDebugOutput(true); //enable debug via serial port
     WiFi.printDiag(Serial);
   #endif
 
