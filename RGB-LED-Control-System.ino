@@ -34,11 +34,14 @@ char msg[80];
 unsigned int MQTTBufferSize = 512; // Size on internal MQTT buffer for incoming/outgoing messages in bytes. Default value is 256B which is not big enough for this use case
 char topic[] = MQTT_TOPIC; // Topic for outgoing MQTT messages to the Domoticz. The MQTT_TOPIC is defined in the header file
 char subscribeTopic[ ] = MQTT_SUBSCRIBE_TOPIC; // Arduino will listen this topic for incoming MQTT messages from the Domoticz. The MQTT_SUBSCRIBE_TOPIC is defined in the header file
-byte MQTTtimeout = 30; // MQTT connection timeout in seconds. System to be rebooted if the timeout expires.
 
 //MQTT variables
 int receivedIDX = 0; // Received IDX number will be stored to this variable
-int switchIDX = 1434; // IDX of the RGB switch controlling the RGB LEDs in Domoticz
+int switchIDX = 1879; // IDX of the RGB switch controlling the RGB LEDs in Domoticz
+byte MQTTRetryCounter = 0; // Variable to count MQTT disconnections
+byte MaxMQTTRetries = 3; // Amount of MQTT connection retries before Wi-Fi connection is reconnected
+byte WiFiRetryCounter = 0; // Variable to count Wi-Fi reconnections
+byte MaxWiFiRetries = 3; // Amount of Wi-Fi reconnections before system is restarted
 
 //WS2813 RGB LED stripe and NeoPixel library initialization
 const uint16_t PixelCount = 76; // 76 RGB LEDs on the stripe
@@ -93,6 +96,9 @@ void setup()
   Serial.print(F("MQTT topic "));
   Serial.print(subscribeTopic);
   mqttClient.subscribe(subscribeTopic) ? Serial.println(F(" subscribed succesfully")) : Serial.println(F(" subscription failed...")); //condition ? valueIfTrue : valueIfFalse
+  Serial.print(F("MQTT topic "));
+  Serial.print(topic);
+  Serial.print(F(" listened for incoming messages"));
   
   //Reset all neopixels to off state
   strip.Begin();
@@ -109,35 +115,43 @@ void loop()
     {
       Serial.println(F("MQTT client disconnected"));
       printMQTTClientState(mqttClient.state()); // print the state of the client
-      Serial.println(F("Trying to reconnect"));
-      byte timeoutCounter = 0;
+      // Not sure is the following line actually needed
+      mqttClient.disconnect();
 
-      while (!mqttClient.connect(clientID))
+      Serial.println(F("Trying to reconnect to the MQTT server"));
+
+      if (mqttClient.connect(clientID))
       {
-        delay(500);
-        Serial.print(".");
-        timeoutCounter += 1;
-
-        if (timeoutCounter >= (MQTTtimeout * 2));
-        {
-          Serial.println("MQTT connection timeout. Wi-Fi to be reconnected.");
-          WiFi.disconnect(); // Disconnect from the Wi-Fi network
-          delay(5000);
-          startWiFi(); // Connect to the Wi-Fi network
-          timeoutCounter = 0;
-        }
-      }
-    
-      Serial.println(F("MQTT client connected"));
-
-      if (mqttClient.subscribe(subscribeTopic)) //MQTT topic subscribed for the callback function
-      {
-        Serial.println(F("MQTT topic subscribed succesfully"));
+        Serial.println(F("MQTT client connected"));
+        Serial.print(F("MQTT topic "));
+        Serial.print(subscribeTopic);
+        mqttClient.subscribe(subscribeTopic) ? Serial.println(F(" subscribed succesfully\n")) : Serial.println(F(" subscription failed...\n")); //condition ? valueIfTrue : valueIfFalse
       }
       else
       {
-        Serial.println(F("MQTT topic subscription failed"));
-        mqttClient.disconnect(); // Disconnect the MQTT client
+        Serial.println(F("MQTT client connection failed...\n"));
+        MQTTRetryCounter += 1;
+      }
+
+      if (WiFiRetryCounter >= MaxWiFiRetries)  // Systen to be restarted if Wi-Fi reconnections haven't fixed MQTT connection issue
+      {
+        Serial.println("Too many Wi-Fi reconnections");
+        WiFi.disconnect(); // Disconnect from the Wi-Fi network
+        Serial.println("Wi-Fi disconnected");
+        Serial.println("System to be restarted in 2s...");
+        delay(2000);
+        ESP.restart();
+      }      
+
+      if (MQTTRetryCounter >= MaxMQTTRetries) // Wi-Fi to be reconnected if MQTT client cannot connect to server
+      {
+        MQTTRetryCounter = 0;
+        WiFiRetryCounter += 1;
+        Serial.println("Too many MQTT disconnections. Wi-Fi to be reconnected.");
+        WiFi.disconnect(); // Disconnect from the Wi-Fi network
+        Serial.println("Wi-Fi disconnected");
+        delay(5000);
+        startWiFi(); // Connect to the Wi-Fi network
       }
     }
 
@@ -310,7 +324,7 @@ void sendMQTTPayload(String payload) // Sends MQTT payload to the MQTT broker / 
 	// Convert payload to char array
 	payload.toCharArray(msg, payload.length()+1);
 
-    //If connection to MQTT broker is disconnected, connect again
+  //If connection to MQTT broker is disconnected, connect again
   if (!mqttClient.connected())
   {
     (mqttClient.connect(clientID)) ? Serial.println(F("MQTT client connected")) : Serial.println(F("MQTT client connection failed...")); //condition ? valueIfTrue : valueIfFalse - This is a Ternary operator
